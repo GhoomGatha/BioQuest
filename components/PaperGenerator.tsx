@@ -1,48 +1,49 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Paper, Question, QuestionSource, Difficulty, Semester } from '../types';
+import { Paper, Question, QuestionSource, Difficulty, Semester, GroundingSource } from '../types';
 import { t } from '../utils/localization';
-import { generateQuestionsAI } from '../services/geminiService';
-import { CLASSES, YEARS, SEMESTERS } from '../constants';
+import { generateQuestionsAI, getChaptersAI } from '../services/geminiService';
+import { CLASSES, YEARS, SEMESTERS, BOARDS, MARKS } from '../constants';
 import { useHistory } from '../hooks/useHistory';
 import Modal from './Modal';
-
-declare var jspdf: any;
-declare var XLSX: any;
+import { getBengaliFontBase64, getDevanagariFontBase64 } from '../utils/fontData';
+import { loadScript } from '../utils/scriptLoader';
 
 const WBBSE_SYLLABUS_KEY = 'bioquest_wbbse_syllabus_only_v1';
 const PAPER_GENERATOR_DRAFT_KEY = 'bioquest_paper_generator_draft_v1';
 
-const questionTypes = ['Short Answer', 'Multiple Choice', 'Fill in the Blanks', 'True/False', 'Image-based'];
+const questionTypes = ['Short Answer', 'Multiple Choice', 'Fill in the Blanks', 'True/False', 'Image-based', 'Odd Man Out', 'Matching'];
+
+interface MarkDistributionRow {
+    count: number;
+    marks: number;
+}
 
 interface GeneratorSettings {
-    markDistribution: string;
-    aiChapter: string;
+    distribution: MarkDistributionRow[];
+    aiChapters: string[];
     aiDifficulty: Difficulty;
     aiKeywords: string;
     aiQuestionType: string[];
     aiGenerateAnswers: boolean;
     wbbseSyllabusOnly: boolean;
-    generationMode: 'distribution' | 'totalMarks';
-    totalMarks: string;
-    allowedMarks: string;
+    useSearchGrounding: boolean;
 }
 
 interface PaperGeneratorDraft {
     title: string;
     year: number;
+    board: string;
     selectedClass: number;
     semester: Semester;
     avoidPrevious: boolean;
-    markDistribution: string;
-    aiChapter: string;
+    distribution: MarkDistributionRow[];
+    aiChapters: string[];
     aiDifficulty: Difficulty;
     aiKeywords: string;
     aiQuestionType: string[];
     aiGenerateAnswers: boolean;
     wbbseSyllabusOnly: boolean;
-    generationMode: 'distribution' | 'totalMarks';
-    totalMarks: string;
-    allowedMarks: string;
+    useSearchGrounding: boolean;
 }
 
 interface PaperGeneratorProps {
@@ -51,11 +52,13 @@ interface PaperGeneratorProps {
     lang: 'en' | 'bn' | 'hi';
     showToast: (message: string, type?: 'success' | 'error') => void;
     userApiKey?: string;
+    userOpenApiKey?: string;
 }
 
-const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper, lang, showToast, userApiKey }) => {
+const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper, lang, showToast, userApiKey, userOpenApiKey }) => {
     const [title, setTitle] = useState('');
     const [year, setYear] = useState(new Date().getFullYear());
+    const [board, setBoard] = useState('WBBSE');
     const [selectedClass, setClass] = useState(10);
     const [semester, setSemester] = useState<Semester>(Semester.First);
     const [avoidPrevious, setAvoidPrevious] = useState(true);
@@ -64,6 +67,9 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
     const [isDraftLoaded, setIsDraftLoaded] = useState(false);
     const [isImageViewerOpen, setImageViewerOpen] = useState(false);
     const [viewingImage, setViewingImage] = useState<string | null>(null);
+    const [chaptersList, setChaptersList] = useState<string[]>([]);
+    const [loadingChapters, setLoadingChapters] = useState(false);
+    const [chapterInput, setChapterInput] = useState('');
     
     const draftStateRef = useRef<PaperGeneratorDraft>();
 
@@ -81,16 +87,14 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
         canRedo,
         reset: resetSettings
     } = useHistory<GeneratorSettings>({
-        markDistribution: '5x1, 5x2, 2x5',
-        aiChapter: '',
+        distribution: [{ count: 5, marks: 1 }, { count: 5, marks: 2 }, { count: 2, marks: 5 }],
+        aiChapters: [],
         aiDifficulty: Difficulty.Moderate,
         aiKeywords: '',
         aiQuestionType: [],
         aiGenerateAnswers: false,
         wbbseSyllabusOnly: getInitialWbbseState(),
-        generationMode: 'distribution',
-        totalMarks: '25',
-        allowedMarks: '1, 2, 3, 5',
+        useSearchGrounding: false,
     });
 
     useEffect(() => {
@@ -100,11 +104,28 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
     const stableShowToast = useCallback(showToast, []);
 
     useEffect(() => {
+        setLoadingChapters(true);
+        getChaptersAI(board, selectedClass, lang, semester, userApiKey, userOpenApiKey)
+            .then(chapters => {
+                setChaptersList(chapters);
+            })
+            .catch(err => {
+                console.error("Failed to fetch chapters", err);
+                stableShowToast("Could not fetch chapters.", 'error');
+            })
+            .finally(() => {
+                setLoadingChapters(false);
+            });
+    }, [board, selectedClass, semester, lang, stableShowToast, userApiKey, userOpenApiKey]);
+
+
+    useEffect(() => {
         const savedDraft = localStorage.getItem(PAPER_GENERATOR_DRAFT_KEY);
         if (savedDraft) {
             const draftData = JSON.parse(savedDraft);
             setTitle(draftData.title || '');
             setYear(draftData.year || new Date().getFullYear());
+            setBoard(draftData.board || 'WBBSE');
             setClass(draftData.selectedClass || 10);
             setSemester(draftData.semester || Semester.First);
             setAvoidPrevious(draftData.avoidPrevious !== undefined ? draftData.avoidPrevious : true);
@@ -117,17 +138,22 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                 aiQuestionTypeArray = [loadedAiQuestionType];
             }
 
+            let chaptersArray: string[] = [];
+            if (draftData.aiChapters && Array.isArray(draftData.aiChapters)) {
+                chaptersArray = draftData.aiChapters;
+            } else if (draftData.aiChapter && typeof draftData.aiChapter === 'string') {
+                chaptersArray = draftData.aiChapter.split(',').map((c: string) => c.trim()).filter(Boolean);
+            }
+
             resetSettings({
-                markDistribution: draftData.markDistribution || '5x1, 5x2, 2x5',
-                aiChapter: draftData.aiChapter || '',
+                distribution: draftData.distribution || [{ count: 5, marks: 1 }, { count: 5, marks: 2 }, { count: 2, marks: 5 }],
+                aiChapters: chaptersArray,
                 aiDifficulty: draftData.aiDifficulty || Difficulty.Moderate,
                 aiKeywords: draftData.aiKeywords || '',
                 aiQuestionType: aiQuestionTypeArray,
                 aiGenerateAnswers: draftData.aiGenerateAnswers !== undefined ? draftData.aiGenerateAnswers : false,
                 wbbseSyllabusOnly: draftData.wbbseSyllabusOnly !== undefined ? draftData.wbbseSyllabusOnly : true,
-                generationMode: draftData.generationMode || 'distribution',
-                totalMarks: draftData.totalMarks || '25',
-                allowedMarks: draftData.allowedMarks || '1, 2, 3, 5',
+                useSearchGrounding: draftData.useSearchGrounding || false,
             });
 
             setIsDraftLoaded(true);
@@ -148,6 +174,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
     const draftData: PaperGeneratorDraft = {
         title,
         year,
+        board,
         selectedClass,
         semester,
         avoidPrevious,
@@ -155,7 +182,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
     };
     draftStateRef.current = draftData;
     
-    const handleSettingsChange = useCallback((field: keyof GeneratorSettings, value: string | boolean | Difficulty | 'distribution' | 'totalMarks' | string[]) => {
+    const handleSettingsChange = useCallback((field: keyof GeneratorSettings, value: any) => {
         setSettings({ ...settings, [field]: value });
     }, [settings, setSettings]);
     
@@ -165,7 +192,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
             ? [...settings.aiQuestionType, type]
             : settings.aiQuestionType.filter(t => t !== type);
 
-        const requiresAnswer = ['Multiple Choice', 'Fill in the Blanks', 'True/False'].includes(type);
+        const requiresAnswer = ['Multiple Choice', 'Fill in the Blanks', 'True/False', 'Odd Man Out', 'Matching'].includes(type);
 
         if (isAdding && requiresAnswer) {
             // When adding a type that requires an answer, automatically check the box.
@@ -175,14 +202,32 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
         }
     };
 
-    const generateFromBank = useCallback((distribution: [number, number][]): { questions: Question[] } | { error: string } => {
+    const handleDistributionChange = (index: number, field: 'count' | 'marks', value: number) => {
+        const newDistribution = [...settings.distribution];
+        if (value >= 0) { // Ensure non-negative numbers
+            newDistribution[index] = { ...newDistribution[index], [field]: value };
+            setSettings({ ...settings, distribution: newDistribution });
+        }
+    };
+
+    const addDistributionRow = () => {
+        const newDistribution = [...settings.distribution, { count: 1, marks: 1 }];
+        setSettings({ ...settings, distribution: newDistribution });
+    };
+
+    const removeDistributionRow = (index: number) => {
+        const newDistribution = settings.distribution.filter((_, i) => i !== index);
+        setSettings({ ...settings, distribution: newDistribution });
+    };
+
+    const generateFromBank = useCallback((distribution: MarkDistributionRow[]): { questions: Question[] } | { error: string } => {
         let sourcePool = questions.filter(q => q.class === selectedClass);
         if (avoidPrevious) {
-            sourcePool = sourcePool.filter(q => q.usedIn.length === 0);
+            sourcePool = sourcePool.filter(q => q.used_in.length === 0);
         }
 
         const requiredCounts = new Map<number, number>();
-        for (const [count, marks] of distribution) {
+        for (const { count, marks } of distribution) {
             requiredCounts.set(marks, (requiredCounts.get(marks) || 0) + count);
         }
 
@@ -199,7 +244,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
         }
         
         let finalQuestions: Question[] = [];
-        for (const [count, marks] of distribution) {
+        for (const { count, marks } of distribution) {
             const suitableQuestions = sourcePool.filter(q => q.marks === marks);
             const selected = suitableQuestions.sort(() => 0.5 - Math.random()).slice(0, count);
             finalQuestions.push(...selected);
@@ -208,7 +253,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
         return { questions: finalQuestions };
     }, [questions, selectedClass, avoidPrevious]);
     
-    const createPaper = useCallback((questions: Question[], source: QuestionSource): Paper => {
+    const createPaper = useCallback((questions: Question[], source: QuestionSource, grounding_sources?: GroundingSource[]): Paper => {
         return {
             id: new Date().toISOString(),
             title: title.trim() || `Class ${selectedClass} Paper - ${year}`,
@@ -217,7 +262,8 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
             semester,
             source,
             questions,
-            createdAt: new Date().toISOString()
+            created_at: new Date().toISOString(),
+            grounding_sources,
         };
     }, [title, year, selectedClass, semester]);
 
@@ -227,82 +273,17 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
         setGeneratedPaper(null);
 
         try {
-            let distribution: [number, number][] | null;
-
-            if (settings.generationMode === 'distribution') {
-                distribution = settings.markDistribution.split(',')
-                    .map(s => s.trim().split('x').map(p => parseInt(p, 10)))
-                    .filter((parts): parts is [number, number] => parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1]));
-
-                if (distribution.length === 0 && settings.markDistribution.trim() !== '') {
-                    showToast('Invalid mark distribution format.', 'error');
-                    setIsGenerating(false);
-                    return;
-                }
-            } else { // 'totalMarks' mode
-                const findDistribution = (): [number, number][] | null => {
-                    const target = parseInt(settings.totalMarks, 10);
-                    const uniqueMarks = [...new Set<number>(settings.allowedMarks.split(',').map(s => parseInt(s.trim(), 10)).filter(m => !isNaN(m) && m > 0))];
-
-                    if (isNaN(target) || target <= 0 || uniqueMarks.length === 0) {
-                        showToast('Invalid total marks or allowed marks.', 'error');
-                        return null;
-                    }
-
-                    const dp = new Array(target + 1).fill(false);
-                    dp[0] = true;
-
-                    for (let i = 1; i <= target; i++) {
-                        for (const mark of uniqueMarks) {
-                            if (i >= mark && dp[i - mark]) {
-                                dp[i] = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (!dp[target]) {
-                        return null; 
-                    }
-
-                    const resultMarks: number[] = [];
-                    let currentTotal = target;
-
-                    while (currentTotal > 0) {
-                        const possibleMoves = uniqueMarks.filter(mark => {
-                            return currentTotal >= mark && dp[currentTotal - mark];
-                        });
-                        
-                        if (possibleMoves.length === 0) {
-                            console.error("Stuck in distribution generation, this should not happen.");
-                            return null; 
-                        }
-
-                        const randomMove = possibleMoves[Math.floor(Math.random() * possibleMoves.length)];
-                        resultMarks.push(randomMove);
-                        currentTotal -= randomMove;
-                    }
-                    
-                    const distributionMap = new Map<number, number>();
-                    for (const mark of resultMarks) {
-                        distributionMap.set(mark, (distributionMap.get(mark) || 0) + 1);
-                    }
-
-                    return Array.from(distributionMap.entries()).map(([mark, count]) => [count, mark]);
-                };
-                
-                distribution = findDistribution();
-
-                if (!distribution) {
-                    showToast(t('distributionGenerationFailed', lang), 'error');
-                    setIsGenerating(false);
-                    return;
-                }
+            let distribution: MarkDistributionRow[];
+            distribution = settings.distribution.filter(d => d.count > 0 && d.marks > 0);
+            if (distribution.length === 0) {
+                showToast('Please add at least one question type to the mark distribution.', 'error');
+                setIsGenerating(false);
+                return;
             }
 
             if (useAI) {
                 try {
-                    const aiChapters = settings.aiChapter.split(',').map(c => c.trim()).filter(Boolean);
+                    const aiChapters = settings.aiChapters;
                     if (aiChapters.length === 0) {
                         showToast('Please provide at least one chapter for AI generation.', 'error');
                         return; // No finally block here, so need to set isGenerating to false
@@ -310,12 +291,13 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                     
                     let existingQuestionPool = questions.filter(q => 
                         q.class === selectedClass && 
-                        (avoidPrevious ? q.usedIn.length === 0 : true)
+                        (avoidPrevious ? q.used_in.length === 0 : true)
                     );
                     
                     let finalQuestions: Question[] = [];
+                    let allGroundingChunks: any[] = [];
 
-                    for (const [count, marks] of distribution) {
+                    for (const { count, marks } of distribution) {
                         if (count <= 0) continue;
 
                         const selectedTypes = settings.aiQuestionType.length > 0 ? settings.aiQuestionType : ['Short Answer'];
@@ -339,12 +321,12 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                         
                         for (const request of requestsToMake) {
                             if (finalQuestions.length > 0) {
-                            await new Promise(resolve => setTimeout(resolve, 1500));
+                            await new Promise(resolve => setTimeout(resolve, 2000));
                             }
                             
                             const chapterForThisGroup = aiChapters[Math.floor(Math.random() * aiChapters.length)];
 
-                            const generatedBatch = await generateQuestionsAI({
+                            const { generatedQuestions, groundingChunks } = await generateQuestionsAI({
                                 class: selectedClass,
                                 chapter: chapterForThisGroup,
                                 marks,
@@ -355,19 +337,20 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                                 generateAnswer: settings.aiGenerateAnswers,
                                 wbbseSyllabusOnly: settings.wbbseSyllabusOnly,
                                 lang: lang,
-                            }, existingQuestionPool, userApiKey);
+                                useSearchGrounding: settings.useSearchGrounding,
+                            }, existingQuestionPool, userApiKey, userOpenApiKey);
 
-                            if (generatedBatch.length > 0) {
-                                const newQuestions = generatedBatch.map((g): Question => ({
+                            if (generatedQuestions.length > 0) {
+                                const newQuestions = generatedQuestions.map((g): Question => ({
                                     id: `gen-${new Date().toISOString()}-${Math.random()}`,
                                     text: g.text!,
                                     answer: g.answer,
-                                    imageDataURL: g.imageDataURL,
+                                    image_data_url: g.image_data_url,
                                     class: selectedClass,
                                     chapter: chapterForThisGroup,
                                     marks,
                                     difficulty: settings.aiDifficulty,
-                                    usedIn: [],
+                                    used_in: [],
                                     source: QuestionSource.Generated,
                                     year: year,
                                     semester: semester,
@@ -376,45 +359,65 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                                 finalQuestions.push(...newQuestions);
                                 existingQuestionPool.push(...newQuestions);
                             }
+
+                            if (groundingChunks) {
+                                allGroundingChunks.push(...groundingChunks);
+                            }
                         }
                     }
 
-                    const paper = createPaper(finalQuestions, QuestionSource.Generated);
+                    const grounding_sources = allGroundingChunks
+                        ?.map((chunk: any) => chunk.web)
+                        .filter(Boolean)
+                        .map((source: any) => ({ uri: source.uri, title: source.title }))
+                        // remove duplicates
+                        .filter((source, index, self) => index === self.findIndex(s => s.uri === source.uri));
+
+
+                    const paper = createPaper(finalQuestions, QuestionSource.Generated, grounding_sources);
+                    onSavePaper(paper);
                     setGeneratedPaper(paper);
 
                 } catch (error: any) {
                     console.error("Error generating paper with AI:", error);
 
-                    let isQuotaError = false;
-                    // Check for quota error in the response
-                    if (error?.error?.status === 'RESOURCE_EXHAUSTED' || error?.error?.code === 429) {
-                        isQuotaError = true;
-                    } else if (typeof error.message === 'string' && error.message.includes('429')) {
-                        try {
-                            const errorJson = JSON.parse(error.message.substring(error.message.indexOf('{')));
-                            if (errorJson?.error?.status === 'RESOURCE_EXHAUSTED' || errorJson?.error?.code === 429) {
-                                isQuotaError = true;
-                            }
-                        } catch {
-                            // ignore if parsing fails
-                        }
+                    // Handle specific, actionable errors first and stop.
+                    if (typeof error.message === 'string' && error.message.includes("API Key is not configured")) {
+                        showToast(error.message, 'error');
+                        return; // Exits the try block, finally will still run.
                     }
-                    
-                    if (isQuotaError) {
-                        showToast(t('apiQuotaError', lang), 'error');
-                    } else {
-                        showToast(t('apiError', lang), 'error');
-                    }
-                    
-                    showToast(t('fallbackToBank', lang), 'success');
-                    
+
                     const fallbackResult = generateFromBank(distribution);
+
                     if ('error' in fallbackResult) {
-                        showToast(fallbackResult.error, 'error');
+                        // AI failed, and fallback is also not possible.
+                        // Determine the AI error message.
+                        let isQuotaError = false;
+                        if (error?.error?.status === 'RESOURCE_EXHAUSTED' || error?.error?.code === 429) {
+                            isQuotaError = true;
+                        } else if (typeof error.message === 'string' && error.message.includes('429')) {
+                             try {
+                                const errorJson = JSON.parse(error.message.substring(error.message.indexOf('{')));
+                                if (errorJson?.error?.status === 'RESOURCE_EXHAUSTED' || errorJson?.error?.code === 429) {
+                                    isQuotaError = true;
+                                }
+                            } catch {
+                                // ignore if parsing fails
+                            }
+                        }
+
+                        const aiErrorMessage = isQuotaError ? t('apiQuotaError', lang) : t('apiError', lang);
+                        
+                        // Combine AI error with the specific fallback error for a single, informative message.
+                        showToast(`${aiErrorMessage}. ${fallbackResult.error}`, 'error');
+                        
                     } else {
+                        // AI failed, but fallback is possible.
+                        // The 'fallbackToBank' message implies AI failure and initiates the fallback action.
+                        showToast(t('fallbackToBank', lang), 'success');
                         const paper = createPaper(fallbackResult.questions, QuestionSource.Manual);
+                        onSavePaper(paper);
                         setGeneratedPaper(paper);
-                        showToast(t('fallbackSuccess', lang), 'success');
                     }
                 }
             } else {
@@ -423,6 +426,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                     showToast(result.error, 'error');
                 } else {
                     const paper = createPaper(result.questions, QuestionSource.Manual);
+                    onSavePaper(paper);
                     setGeneratedPaper(paper);
                 }
             }
@@ -448,48 +452,69 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
         localStorage.removeItem(PAPER_GENERATOR_DRAFT_KEY);
         setTitle('');
         setYear(new Date().getFullYear());
+        setBoard('WBBSE');
         setClass(10);
         setSemester(Semester.First);
         setAvoidPrevious(true);
         resetSettings({
-            markDistribution: '5x1, 5x2, 2x5',
-            aiChapter: '',
+            distribution: [{ count: 5, marks: 1 }, { count: 5, marks: 2 }, { count: 2, marks: 5 }],
+            aiChapters: [],
             aiDifficulty: Difficulty.Moderate,
             aiKeywords: '',
             aiQuestionType: [],
             aiGenerateAnswers: false,
             wbbseSyllabusOnly: getInitialWbbseState(),
-            generationMode: 'distribution',
-            totalMarks: '25',
-            allowedMarks: '1, 2, 3, 5',
+            useSearchGrounding: false,
         });
         showToast(t('draftCleared', lang));
     };
 
     const handleClearAISettings = () => {
         const currentSettings = { ...settings };
-        currentSettings.aiChapter = '';
+        currentSettings.aiChapters = [];
         currentSettings.aiKeywords = '';
         currentSettings.aiQuestionType = [];
         currentSettings.aiDifficulty = Difficulty.Moderate;
         currentSettings.aiGenerateAnswers = false;
+        currentSettings.useSearchGrounding = false;
         setSettings(currentSettings);
         showToast(t('aiSettingsCleared', lang));
     };
     
-    const handleSaveAndArchive = () => {
-        if (generatedPaper) {
-            onSavePaper(generatedPaper);
-            setGeneratedPaper(null);
-            setTitle(''); // Reset title for next paper
-        }
-    };
-
-    const handleExportPDF = (paper: Paper) => {
+    const handleExportPDF = async (paper: Paper) => {
         if (!paper) return;
 
-        const { jsPDF } = jspdf;
+        try {
+            await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
+        } catch (error) {
+            console.error("Failed to load jsPDF library", error);
+            showToast("Failed to load PDF export library.", "error");
+            return;
+        }
+
+        const { jsPDF } = (window as any).jspdf;
         const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+
+        let fontName = 'helvetica';
+        if (lang === 'bn') {
+            const fontData = await getBengaliFontBase64();
+            if (fontData) {
+                doc.addFileToVFS('NotoSansBengali-Regular.ttf', fontData);
+                doc.addFont('NotoSansBengali-Regular.ttf', 'NotoSansBengali', 'normal');
+                fontName = 'NotoSansBengali';
+            } else {
+                showToast('Could not load Bengali font for PDF.', 'error');
+            }
+        } else if (lang === 'hi') {
+            const fontData = await getDevanagariFontBase64();
+            if (fontData) {
+                doc.addFileToVFS('NotoSansDevanagari-Regular.ttf', fontData);
+                doc.addFont('NotoSansDevanagari-Regular.ttf', 'NotoSansDevanagari', 'normal');
+                fontName = 'NotoSansDevanagari';
+            } else {
+                showToast('Could not load Hindi font for PDF.', 'error');
+            }
+        }
 
         const pageHeight = doc.internal.pageSize.getHeight();
         const pageWidth = doc.internal.pageSize.getWidth();
@@ -505,24 +530,24 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
         };
         
         doc.setFontSize(14);
-        doc.setFont('helvetica', 'bold');
+        doc.setFont(fontName, 'bold');
         const titleLines = doc.splitTextToSize(paper.title, maxLineWidth);
         doc.text(titleLines, pageWidth / 2, y, { align: 'center' });
         y += titleLines.length * 6 + 8;
 
         doc.setFontSize(10);
-        doc.setFont('helvetica', 'normal');
+        doc.setFont(fontName, 'normal');
 
         paper.questions.forEach((q, index) => {
             const questionText = `${index + 1}. ${q.text} (${q.marks} ${t('marks', lang)})`;
             
-            if (q.imageDataURL) {
+            if (q.image_data_url) {
                 try {
-                    const imgProps = doc.getImageProperties(q.imageDataURL);
+                    const imgProps = doc.getImageProperties(q.image_data_url);
                     const imgWidth = 80; // Fixed width for consistency
                     const imgHeight = (imgProps.height * imgWidth) / imgProps.width;
                     checkPageBreak(imgHeight + 5); // Check for image height + padding
-                    doc.addImage(q.imageDataURL, 'JPEG', margin, y, imgWidth, imgHeight);
+                    doc.addImage(q.image_data_url, 'JPEG', margin, y, imgWidth, imgHeight);
                     y += imgHeight + 5; // Move y cursor down
                 } catch (e) {
                     console.error("Error adding image to PDF:", e);
@@ -536,17 +561,37 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
             y += textHeight + 3;
         });
 
+        if (paper.grounding_sources && paper.grounding_sources.length > 0) {
+            const sourcesTitle = t('sources', lang);
+            checkPageBreak(8 + 3 + 4.5);
+            y += 8;
+            doc.setFontSize(12);
+            doc.setFont(fontName, 'bold');
+            doc.text(sourcesTitle, margin, y);
+            y += 6 + 2;
+            doc.setFontSize(8);
+            doc.setFont(fontName, 'normal');
+            paper.grounding_sources.forEach(source => {
+                const sourceText = `${source.title || 'Untitled'}: ${source.uri}`;
+                const lines = doc.splitTextToSize(sourceText, maxLineWidth);
+                const textHeight = lines.length * 4;
+                checkPageBreak(textHeight + 2);
+                doc.textWithLink(source.title || source.uri, margin, y, { url: source.uri });
+                y += textHeight + 2;
+            });
+        }
+        
         const questionsWithAnswers = paper.questions.filter(q => q.answer);
         if (questionsWithAnswers.length > 0) {
             const answerKeyTitle = t('answerKey', lang);
             checkPageBreak(8 + 3 + 4.5);
             y += 8;
             doc.setFontSize(12);
-            doc.setFont('helvetica', 'bold');
+            doc.setFont(fontName, 'bold');
             doc.text(answerKeyTitle, margin, y);
             y += 6 + 2;
             doc.setFontSize(10);
-            doc.setFont('helvetica', 'normal');
+            doc.setFont(fontName, 'normal');
             questionsWithAnswers.forEach((q) => {
                 const answerIndex = paper.questions.findIndex(pq => pq.id === q.id) + 1;
                 const answerText = `${answerIndex}. ${q.answer}`;
@@ -561,11 +606,21 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
         doc.save(`${paper.title.replace(/ /g, '_')}.pdf`);
     };
     
-    const handleExportXLSX = (paper: Paper) => {
+    const handleExportXLSX = async (paper: Paper) => {
         if (!paper) return;
+
+        try {
+            await loadScript("https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js");
+        } catch (error) {
+            console.error("Failed to load XLSX library", error);
+            showToast("Failed to load Excel export library.", "error");
+            return;
+        }
+
+        const XLSX = (window as any).XLSX;
         const questionData = paper.questions.map((q, index) => ({
             'No.': index + 1,
-            'Question': q.imageDataURL ? `[Image-based question] ${q.text}` : q.text,
+            'Question': q.image_data_url ? `[Image-based question] ${q.text}` : q.text,
             'Marks': q.marks,
         }));
         const answerData = paper.questions
@@ -574,6 +629,11 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                 'No.': paper.questions.findIndex(pq => pq.id === q.id) + 1,
                 'Answer': q.answer,
             }));
+        
+        const sourceData = (paper.grounding_sources || []).map(s => ({
+            'Title': s.title,
+            'URL': s.uri,
+        }));
 
         const questionSheet = XLSX.utils.json_to_sheet(questionData);
         const wb = XLSX.utils.book_new();
@@ -583,24 +643,56 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
             const answerSheet = XLSX.utils.json_to_sheet(answerData);
             XLSX.utils.book_append_sheet(wb, answerSheet, 'Answer Key');
         }
+
+        if (sourceData.length > 0) {
+            const sourceSheet = XLSX.utils.json_to_sheet(sourceData);
+            XLSX.utils.book_append_sheet(wb, sourceSheet, 'Sources');
+        }
+
         XLSX.writeFile(wb, `${paper.title.replace(/ /g, '_')}.xlsx`);
     };
 
     const calculatedTotal = useMemo(() => {
-        if (settings.generationMode === 'totalMarks') return settings.totalMarks;
         try {
-            return settings.markDistribution
-                .split(',')
-                .map(s => s.trim().split('x').map(p => parseInt(p, 10)))
-                .filter((parts): parts is [number, number] => parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1]))
-                .reduce((acc, [count, marks]) => acc + (count * marks), 0);
+            return settings.distribution.reduce((acc, { count, marks }) => acc + (count * marks), 0);
         } catch {
             return 'N/A';
         }
-    }, [settings.markDistribution, settings.generationMode, settings.totalMarks]);
+    }, [settings.distribution]);
     
     const inputStyles = "w-full p-2.5 border border-slate-300 bg-white rounded-lg shadow-sm focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 transition";
     const labelStyles = "block text-sm font-semibold text-slate-600 mb-1";
+
+    const chapterSuggestions = useMemo(() => {
+        if (!chapterInput) return [];
+        const lowercasedInput = chapterInput.toLowerCase();
+        return chaptersList
+            .filter(c => 
+                c.toLowerCase().includes(lowercasedInput) && 
+                !settings.aiChapters.includes(c)
+            )
+            .slice(0, 5);
+    }, [chapterInput, chaptersList, settings.aiChapters]);
+    
+    const addChapter = (chapter: string) => {
+        const trimmed = chapter.trim();
+        if (trimmed && !settings.aiChapters.includes(trimmed)) {
+            handleSettingsChange('aiChapters', [...settings.aiChapters, trimmed]);
+        }
+        setChapterInput('');
+    };
+
+    const removeChapter = (index: number) => {
+        const newChapters = settings.aiChapters.filter((_, i) => i !== index);
+        handleSettingsChange('aiChapters', newChapters);
+    };
+
+    const handleChapterInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (e.key === 'Enter' && chapterInput) {
+            e.preventDefault();
+            addChapter(chapterInput);
+        }
+    };
 
     return (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 p-2 sm:p-4">
@@ -608,26 +700,33 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-5">
                 <h2 className="text-xl font-bold font-serif-display text-slate-800">{t('generatePaper', lang)}</h2>
                 
-                {/* Basic Info */}
-                <div className="space-y-4">
-                    <div>
-                        <label htmlFor="title" className={labelStyles}>{t('paperTitle', lang)}</label>
-                        <input id="title" type="text" value={title} onChange={e => setTitle(e.target.value)} placeholder={`e.g., Mid-term Exam`} className={inputStyles} />
-                    </div>
-                    <div className="grid grid-cols-3 gap-4">
-                        <div>
-                            <label htmlFor="year" className={labelStyles}>{t('year', lang)}</label>
-                            <select id="year" value={year} onChange={e => setYear(parseInt(e.target.value))} className={inputStyles}>
-                                {YEARS.map(y => <option key={y} value={y}>{y}</option>)}
+                {/* Paper Details Section */}
+                <div className="border-t border-slate-200 pt-5 space-y-4">
+                    <h3 className="text-lg font-bold text-slate-700 mb-2">{t('paperDetails', lang)}</h3>
+                    <div className="flex flex-wrap items-end gap-4">
+                        <div className="flex-grow min-w-[200px] sm:min-w-[250px]">
+                            <label htmlFor="title" className={labelStyles}>{t('paperTitle', lang)}</label>
+                            <input id="title" type="text" value={title} onChange={e => setTitle(e.target.value)} placeholder={`e.g., Mid-term Exam`} className={inputStyles} />
+                        </div>
+                        <div className="flex-1 min-w-[80px]">
+                            <label htmlFor="board" className={labelStyles}>{t('board', lang)}</label>
+                            <select id="board" value={board} onChange={e => setBoard(e.target.value)} className={inputStyles}>
+                                {BOARDS.map(b => <option key={b} value={b}>{b}</option>)}
                             </select>
                         </div>
-                        <div>
+                         <div className="flex-1 min-w-[80px]">
                             <label htmlFor="class" className={labelStyles}>{t('class', lang)}</label>
                             <select id="class" value={selectedClass} onChange={e => setClass(parseInt(e.target.value))} className={inputStyles}>
                                 {CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
                             </select>
                         </div>
-                        <div>
+                        <div className="flex-1 min-w-[80px]">
+                            <label htmlFor="year" className={labelStyles}>{t('year', lang)}</label>
+                            <select id="year" value={year} onChange={e => setYear(parseInt(e.target.value))} className={inputStyles}>
+                                {YEARS.map(y => <option key={y} value={y}>{y}</option>)}
+                            </select>
+                        </div>
+                        <div className="flex-1 min-w-[80px]">
                             <label htmlFor="semester" className={labelStyles}>{t('semester', lang)}</label>
                             <select id="semester" value={semester} onChange={e => setSemester(e.target.value as Semester)} className={inputStyles}>
                                  {SEMESTERS.map(s => <option key={s} value={s}>{`Sem ${s}`}</option>)}
@@ -635,34 +734,52 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                         </div>
                     </div>
                 </div>
-                
-                {/* Mark Distribution */}
+
+                {/* New Mark Distribution */}
                 <div className="border-t border-slate-200 pt-5">
                     <div className="flex items-center justify-between mb-2">
-                         <label className={labelStyles}>{t('generateBy', lang)}</label>
+                        <h3 className="text-lg font-bold text-slate-700">{t('markDistribution', lang)}</h3>
                          <p className="text-sm font-bold text-slate-700">{t('totalMarks', lang)}: <span className="text-indigo-600">{calculatedTotal}</span></p>
                     </div>
-                   <div className="flex items-center bg-slate-100 rounded-lg p-1 space-x-1">
-                        <button onClick={() => handleSettingsChange('generationMode', 'distribution')} className={`flex-1 py-1.5 text-sm font-semibold rounded-md transition-colors ${settings.generationMode === 'distribution' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-600 hover:bg-white/70'}`}>{t('markDistributionMode', lang)}</button>
-                        <button onClick={() => handleSettingsChange('generationMode', 'totalMarks')} className={`flex-1 py-1.5 text-sm font-semibold rounded-md transition-colors ${settings.generationMode === 'totalMarks' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-600 hover:bg-white/70'}`}>{t('totalMarksMode', lang)}</button>
+                     <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2">
+                        {settings.distribution.map((dist, index) => (
+                            <div key={index} className="grid grid-cols-[1fr_auto_1fr_auto] gap-x-2 items-center">
+                                <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    value={dist.count}
+                                    onChange={e => {
+                                        const value = e.target.value.replace(/\D/g, '');
+                                        handleDistributionChange(index, 'count', value === '' ? 0 : parseInt(value, 10));
+                                    }}
+                                    className={inputStyles}
+                                    aria-label={t('numberOfQuestions', lang)}
+                                />
+                                <div className="text-slate-500 font-medium text-center">x</div>
+                                <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    list="marks-options"
+                                    value={dist.marks}
+                                    onChange={e => {
+                                        const value = e.target.value.replace(/\D/g, '');
+                                        handleDistributionChange(index, 'marks', value === '' ? 0 : parseInt(value, 10));
+                                    }}
+                                    className={inputStyles}
+                                    aria-label={t('marksPerQuestion', lang)}
+                                />
+                                <button onClick={() => removeDistributionRow(index)} className="text-red-500 hover:text-red-700 p-1 rounded-full hover:bg-red-100 transition-colors" aria-label={`${t('remove', lang)} row`}>
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" /></svg>
+                                </button>
+                            </div>
+                        ))}
+                         <datalist id="marks-options">
+                            {MARKS.map(m => <option key={m} value={m} />)}
+                        </datalist>
+                        <button onClick={addDistributionRow} className="w-full text-center px-4 py-2 bg-slate-200 text-slate-700 font-semibold rounded-lg hover:bg-slate-300 transition-colors">
+                            + {t('addQuestionType', lang)}
+                        </button>
                     </div>
-                    {settings.generationMode === 'distribution' ? (
-                        <div className="mt-3">
-                            <label htmlFor="markDistribution" className={labelStyles}>{t('markDistribution', lang)}</label>
-                            <input id="markDistribution" type="text" value={settings.markDistribution} onChange={e => handleSettingsChange('markDistribution', e.target.value)} className={inputStyles} placeholder="e.g., 5x1, 5x2, 2x5" />
-                        </div>
-                    ) : (
-                        <div className="grid grid-cols-2 gap-4 mt-3">
-                            <div>
-                                <label htmlFor="totalMarks" className={labelStyles}>{t('totalMarks', lang)}</label>
-                                <input id="totalMarks" type="text" value={settings.totalMarks} onChange={e => handleSettingsChange('totalMarks', e.target.value)} className={inputStyles} placeholder="e.g., 70" />
-                            </div>
-                            <div>
-                                <label htmlFor="allowedMarks" className={labelStyles}>{t('allowedQuestionMarks', lang)}</label>
-                                <input id="allowedMarks" type="text" value={settings.allowedMarks} onChange={e => handleSettingsChange('allowedMarks', e.target.value)} className={inputStyles} placeholder="e.g., 1,2,5,10" />
-                            </div>
-                        </div>
-                    )}
                 </div>
                 
                  {/* AI Settings */}
@@ -684,8 +801,38 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                         </div>
                     </div>
                      <div>
-                        <label htmlFor="aiChapter" className={labelStyles}>{t('chapterForAI', lang)}</label>
-                        <input id="aiChapter" type="text" value={settings.aiChapter} onChange={e => handleSettingsChange('aiChapter', e.target.value)} className={inputStyles} />
+                        <label htmlFor="aiChapterInput" className={labelStyles}>{t('selectChapterForAI', lang)}</label>
+                        <div className="relative">
+                            <div className="flex flex-wrap gap-2 p-2 border border-slate-300 bg-white rounded-lg shadow-sm focus-within:ring-2 focus-within:ring-indigo-400 focus-within:border-indigo-400 transition min-h-[46px]">
+                                {settings.aiChapters.map((chapter, index) => (
+                                    <span key={index} className="flex items-center gap-2 bg-indigo-100 text-indigo-800 text-sm font-medium px-2 py-1 rounded-full">
+                                        {chapter}
+                                        <button type="button" onClick={() => removeChapter(index)} className="text-indigo-600 hover:text-indigo-800 font-bold" aria-label={`Remove ${chapter}`}>
+                                            &times;
+                                        </button>
+                                    </span>
+                                ))}
+                                <input
+                                    id="aiChapterInput"
+                                    type="text"
+                                    value={chapterInput}
+                                    onChange={e => setChapterInput(e.target.value)}
+                                    onKeyDown={handleChapterInputKeyDown}
+                                    placeholder={loadingChapters ? t('fetchingChapters', lang) : t('addChapterPlaceholder', lang)}
+                                    className="flex-grow bg-transparent outline-none p-1"
+                                    disabled={loadingChapters}
+                                />
+                            </div>
+                            {chapterSuggestions.length > 0 && (
+                                <ul className="absolute z-10 w-full mt-1 bg-white border border-slate-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                                    {chapterSuggestions.map(suggestion => (
+                                        <li key={suggestion} onMouseDown={(e) => { e.preventDefault(); addChapter(suggestion); }} className="p-2 cursor-pointer hover:bg-slate-100 text-sm">
+                                            {suggestion}
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                        </div>
                     </div>
                     <div>
                         <label htmlFor="aiKeywords" className={labelStyles}>{t('keywordsForAI', lang)}</label>
@@ -731,6 +878,10 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                             <input type="checkbox" checked={settings.wbbseSyllabusOnly} onChange={e => handleSettingsChange('wbbseSyllabusOnly', e.target.checked)} className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
                             <span className="text-sm font-medium text-slate-700">{t('wbbseSyllabusOnly', lang)}</span>
                         </label>
+                        <label className="flex items-center space-x-2 cursor-pointer">
+                            <input type="checkbox" checked={settings.useSearchGrounding} onChange={e => handleSettingsChange('useSearchGrounding', e.target.checked)} className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+                            <span className="text-sm font-medium text-slate-700">{t('useSearchGrounding', lang)}</span>
+                        </label>
                     </div>
                 </div>
 
@@ -763,12 +914,12 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                             <div className="prose max-w-none prose-slate space-y-4">
                                 {generatedPaper.questions.map((q, index) => (
                                     <div key={q.id}>
-                                        {q.imageDataURL && (
+                                        {q.image_data_url && (
                                             <img 
-                                                src={q.imageDataURL} 
+                                                src={q.image_data_url} 
                                                 alt="Question illustration" 
                                                 className="max-w-xs mx-auto rounded-lg border my-2 cursor-pointer hover:shadow-md transition-shadow"
-                                                onClick={() => openImageViewer(q.imageDataURL!)}
+                                                onClick={() => openImageViewer(q.image_data_url!)}
                                             />
                                         )}
                                         <p><strong>{index + 1}.</strong> {q.text} <span className="text-sm text-slate-500">({q.marks} {t('marks', lang)})</span></p>
@@ -776,6 +927,21 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                                 ))}
                             </div>
                             
+                            {generatedPaper.grounding_sources && generatedPaper.grounding_sources.length > 0 && (
+                                <div className="mt-8 pt-4 border-t border-slate-200">
+                                    <h3 className="text-lg font-bold font-serif-display text-slate-800 mb-3">{t('sources', lang)}</h3>
+                                    <ul className="prose prose-sm max-w-none prose-slate list-disc list-inside space-y-1">
+                                        {generatedPaper.grounding_sources.map(source => (
+                                            <li key={source.uri}>
+                                                <a href={source.uri} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">
+                                                    {source.title || source.uri}
+                                                </a>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
+
                             {generatedPaper.questions.some(q => q.answer) && (
                                 <div className="mt-8 pt-4 border-t border-slate-200">
                                     <h3 className="text-lg font-bold font-serif-display text-slate-800 mb-3">{t('answerKey', lang)}</h3>
@@ -792,7 +958,6 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                         <div className="flex flex-wrap justify-end gap-3 pt-4 mt-4 border-t border-slate-200">
                             <button onClick={() => handleExportXLSX(generatedPaper)} className="px-5 py-2.5 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 shadow-sm hover:shadow-md hover:-translate-y-px transition-all">{t('exportXLSX', lang)}</button>
                             <button onClick={() => handleExportPDF(generatedPaper)} className="px-5 py-2.5 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 shadow-sm hover:shadow-md hover:-translate-y-px transition-all">{t('exportPDF', lang)}</button>
-                            <button onClick={handleSaveAndArchive} className="px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 shadow-sm hover:shadow-md hover:-translate-y-px transition-all">Save & Archive</button>
                         </div>
                     </div>
                 )}

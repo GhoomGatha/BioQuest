@@ -22,7 +22,7 @@ const QuestionForm: React.FC<QuestionFormProps> = ({ onSubmit, onCancel, initial
     semester: initialData?.semester || Semester.First,
     tags: initialData?.tags?.join(', ') || '',
   });
-  const [imageDataURL, setImageDataURL] = useState<string | null>(initialData?.imageDataURL || null);
+  const [imageDataURL, setImageDataURL] = useState<string | null>(initialData?.image_data_url || null);
 
 
   useEffect(() => {
@@ -38,7 +38,7 @@ const QuestionForm: React.FC<QuestionFormProps> = ({ onSubmit, onCancel, initial
         semester: initialData.semester,
         tags: initialData.tags?.join(', ') || '',
       });
-      setImageDataURL(initialData.imageDataURL || null);
+      setImageDataURL(initialData.image_data_url || null);
     }
   }, [initialData]);
 
@@ -72,10 +72,10 @@ const QuestionForm: React.FC<QuestionFormProps> = ({ onSubmit, onCancel, initial
     const questionData: Question = {
       ...restOfData,
       id: initialData?.id || new Date().toISOString(),
-      usedIn: initialData?.usedIn || [],
+      used_in: initialData?.used_in || [],
       source: initialData?.source || QuestionSource.Manual,
       tags: tags.split(',').map(t => t.trim()).filter(Boolean),
-      imageDataURL: imageDataURL || undefined,
+      image_data_url: imageDataURL || undefined,
     };
     onSubmit(questionData);
   };
@@ -98,34 +98,47 @@ const QuestionForm: React.FC<QuestionFormProps> = ({ onSubmit, onCancel, initial
       </div>
        <div>
         <label className="block text-sm font-medium text-slate-600">Image (Optional)</label>
-        {imageDataURL && (
-          <div className="mt-2 relative group w-fit">
-            <img src={imageDataURL} alt="Question preview" className="rounded-lg max-h-48 w-auto border border-slate-300" />
-            <button
-              type="button"
-              onClick={handleRemoveImage}
-              className="absolute top-2 right-2 bg-white/70 backdrop-blur-sm text-red-600 rounded-full p-1 shadow-md hover:bg-red-100 transition-all opacity-0 group-hover:opacity-100"
-              aria-label="Remove image"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
-              </svg>
-            </button>
-          </div>
-        )}
         <div className="mt-2">
-            <input
+            {!imageDataURL ? (
+                <div 
+                    onClick={() => {
+                        const input = document.getElementById('image-upload');
+                        if (input) input.click();
+                    }}
+                    className="flex justify-center items-center w-full h-40 px-6 pt-5 pb-6 border-2 border-slate-300 border-dashed rounded-lg cursor-pointer hover:bg-slate-50 transition-colors duration-200"
+                >
+                    <div className="space-y-1 text-center">
+                        <svg className="mx-auto h-12 w-12 text-slate-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
+                            <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                        <p className="text-sm text-slate-500">
+                            <span className="font-semibold text-indigo-600">Click to upload an image</span>
+                        </p>
+                        <p className="text-xs text-slate-400">PNG, JPG, GIF</p>
+                    </div>
+                </div>
+            ) : (
+                <div className="relative group w-fit">
+                    <img src={imageDataURL} alt="Question preview" className="rounded-lg max-h-48 w-auto border border-slate-300 shadow-sm" />
+                    <button
+                        type="button"
+                        onClick={handleRemoveImage}
+                        className="absolute top-2 right-2 bg-white/80 backdrop-blur-sm text-red-600 rounded-full p-1.5 shadow-md hover:bg-red-100 hover:scale-110 transition-all"
+                        aria-label="Remove image"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                           <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                        </svg>
+                    </button>
+                </div>
+            )}
+             <input
                 id="image-upload"
                 type="file"
                 name="image"
                 onChange={handleImageChange}
                 accept="image/png, image/jpeg, image/gif"
-                className="block w-full text-sm text-slate-500
-                    file:mr-4 file:py-2 file:px-4
-                    file:rounded-full file:border-0
-                    file:text-sm file:font-semibold
-                    file:bg-indigo-50 file:text-indigo-700
-                    hover:file:bg-indigo-100"
+                className="sr-only"
             />
         </div>
       </div>

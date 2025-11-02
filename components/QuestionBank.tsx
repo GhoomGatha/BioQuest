@@ -15,9 +15,9 @@ interface QuestionBankProps {
 const QuestionCard: React.FC<{ question: Question; onEdit: () => void; onDelete: () => void; onCopy: () => void; lang: 'en' | 'bn' | 'hi' }> = ({ question, onEdit, onDelete, onCopy, lang }) => (
     <div className="bg-white p-4 rounded-xl shadow-sm space-y-3 border border-slate-200">
         <p className="text-slate-800">{question.text}</p>
-        {question.imageDataURL && (
+        {question.image_data_url && (
             <div className="flex justify-center p-2 bg-slate-50 rounded-lg">
-                <img src={question.imageDataURL} alt="Question illustration" className="rounded-md max-w-full h-auto max-h-48 object-contain border" />
+                <img src={question.image_data_url} alt="Question illustration" className="rounded-md max-w-full h-auto max-h-48 object-contain border" />
             </div>
         )}
         <div className="flex flex-wrap gap-2 text-xs">
@@ -142,8 +142,8 @@ const QuestionBank: React.FC<QuestionBankProps> = ({ questions, onEditQuestion, 
                   <td className="p-4 text-slate-700 text-sm max-w-md">
                     <div className="flex items-start gap-4">
                       <div className="flex-1">{q.text}</div>
-                      {q.imageDataURL && (
-                        <img src={q.imageDataURL} alt="Question thumbnail" className="w-20 h-auto rounded-md border flex-shrink-0" />
+                      {q.image_data_url && (
+                        <img src={q.image_data_url} alt="Question thumbnail" className="w-20 h-auto rounded-md border flex-shrink-0" />
                       )}
                     </div>
                   </td>

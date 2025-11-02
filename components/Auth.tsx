@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../services/supabaseClient';
 import Modal from './Modal';
+import LoadingSpinner from './LoadingSpinner';
+import { Role } from '../types';
+import { t } from '../utils/localization';
 
 const GoogleIcon = () => (
     <svg className="w-5 h-5 mr-3" viewBox="0 0 48 48">
@@ -12,71 +15,144 @@ const GoogleIcon = () => (
     </svg>
 );
 
+const EmailIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor"><path d="M2.003 5.884L10 9.882l7.997-3.998A2 2 0 0016 4H4a2 2 0 00-1.997 1.884z" /><path d="M18 8.118l-8 4-8-4V14a2 2 0 002 2h12a2 2 0 002-2V8.118z" /></svg>;
+const PhoneIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor"><path d="M2 3a1 1 0 011-1h2.153a1 1 0 01.986.836l.74 4.435a1 1 0 01-.54 1.06l-1.548.773a11.037 11.037 0 006.105 6.105l.774-1.548a1 1 0 011.059-.54l4.435.74a1 1 0 01.836.986V17a1 1 0 01-1 1h-2C7.82 18 2 12.18 2 5V3z" /></svg>;
+
 const REMEMBER_EMAIL_KEY = 'bioquest_remember_email';
-const REMEMBER_PASSWORD_KEY = 'bioquest_remember_password';
 
 const Auth: React.FC = () => {
-  const [isSignUp, setIsSignUp] = useState(false);
+  const [view, setView] = useState<'signIn' | 'signUp' | 'forgotPassword'>('signIn');
+  const [authMethod, setAuthMethod] = useState<'email' | 'phone'>('email');
   
-  // Email state
+  // States for email auth
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
+  
+  // States for phone auth
+  const [phone, setPhone] = useState('');
+  const [otp, setOtp] = useState('');
+  const [otpSent, setOtpSent] = useState(false);
+
+  // Common states
+  const [role, setRole] = useState<Role>('student');
+  const [showPassword, setShowPassword] = useState(false);
   const [agreedToTerms, setAgreedToTerms] = useState(false);
   const [isTermsModalOpen, setIsTermsModalOpen] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  
+  // Dummy lang state for t function
+  const lang = (localStorage.getItem('bioquest_lang') || 'en') as 'en' | 'bn' | 'hi';
 
   useEffect(() => {
     const savedEmail = localStorage.getItem(REMEMBER_EMAIL_KEY);
-    const savedPassword = localStorage.getItem(REMEMBER_PASSWORD_KEY);
-    if (savedEmail && savedPassword) {
-        setEmail(savedEmail);
-        setPassword(savedPassword);
-        setRememberMe(true);
+    if (savedEmail) {
+      setEmail(savedEmail);
+      setRememberMe(true);
     }
   }, []);
   
   useEffect(() => {
-    // Reset forms when switching between sign-in/sign-up
     setError(null);
+    setSuccess(null);
     setAgreedToTerms(false);
-    if (!rememberMe) {
-      setPassword('');
-    }
-  }, [isSignUp, rememberMe]);
+    setPassword('');
+    setPhone('');
+    setOtp('');
+    setOtpSent(false);
+  }, [view, authMethod]);
 
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setSuccess(null);
 
     try {
-      if (isSignUp) {
-        if (!agreedToTerms) {
-            throw new Error("You must agree to the Terms and Conditions to sign up.");
-        }
-        const { error } = await supabase.auth.signUp({ email, password });
+      if (view === 'signUp') {
+        if (!agreedToTerms) throw new Error("You must agree to the Terms and Conditions to sign up.");
+        const { error } = await supabase.auth.signUp({
+            email,
+            password,
+            options: { data: { role } },
+        });
         if (error) throw error;
-        alert('Check your email for the confirmation link!');
+        setSuccess('Check your email for the confirmation link!');
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
-
-        if (rememberMe) {
-            localStorage.setItem(REMEMBER_EMAIL_KEY, email);
-            localStorage.setItem(REMEMBER_PASSWORD_KEY, password);
-        } else {
-            localStorage.removeItem(REMEMBER_EMAIL_KEY);
-            localStorage.removeItem(REMEMBER_PASSWORD_KEY);
-        }
+        if (rememberMe) localStorage.setItem(REMEMBER_EMAIL_KEY, email);
+        else localStorage.removeItem(REMEMBER_EMAIL_KEY);
       }
     } catch (err: any) {
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handlePasswordReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    setSuccess(null);
+    try {
+        const { error } = await supabase.auth.resetPasswordForEmail(email, {
+            redirectTo: window.location.origin,
+        });
+        if (error) throw error;
+        setSuccess('Check your email for password reset instructions.');
+    } catch (err: any) {
+        setError(err.message);
+    } finally {
+        setLoading(false);
+    }
+  };
+
+
+  const handleSendOtp = async () => {
+    if (!phone.trim() || !/^\d{10}$/.test(phone.trim())) {
+        setError(t('invalidPhoneNumber', lang));
+        return;
+    }
+    setLoading(true);
+    setError(null);
+    setSuccess(null);
+    try {
+        const fullPhoneNumber = `+91${phone.trim()}`;
+        const { error } = await supabase.auth.signInWithOtp({
+            phone: fullPhoneNumber,
+            options: view === 'signUp' ? { data: { role } } : {},
+        });
+        if (error) throw error;
+        setOtpSent(true);
+        setSuccess(t('otpSentSuccess', lang));
+    } catch (err: any) {
+        setError(err.message);
+    } finally {
+        setLoading(false);
+    }
+  };
+  
+  const handlePhoneAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    try {
+        const fullPhoneNumber = `+91${phone.trim()}`;
+        const { error } = await supabase.auth.verifyOtp({
+            phone: fullPhoneNumber,
+            token: otp,
+            type: 'sms'
+        });
+        if (error) throw error;
+    } catch (err: any) {
+        setError(err.message);
+    } finally {
+        setLoading(false);
     }
   };
 
@@ -95,6 +171,121 @@ const Auth: React.FC = () => {
 
   const inputStyles = "block w-full rounded-lg border-slate-300 bg-slate-50 shadow-sm focus:border-indigo-500 focus:ring-indigo-500";
 
+  const renderAuthContent = () => {
+    if (view === 'forgotPassword') {
+        return (
+            <form onSubmit={handlePasswordReset} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-600">Email</label>
+                  <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required className={`${inputStyles} mt-1`} />
+                </div>
+                <button type="submit" disabled={loading} className="w-full flex justify-center px-4 py-2.5 text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 font-semibold disabled:bg-indigo-400">
+                    {loading ? 'Sending...' : 'Send Reset Instructions'}
+                </button>
+            </form>
+        );
+    }
+    if (authMethod === 'email') {
+        return (
+          <form onSubmit={handleEmailAuth} className="space-y-4">
+            {view === 'signUp' && (
+                <div>
+                    <label className="block text-sm font-medium text-slate-600 mb-2">I am a:</label>
+                    <div className="flex items-center bg-slate-100 rounded-lg p-1 space-x-1">
+                        <button type="button" onClick={() => setRole('teacher')} className={`flex-1 py-1.5 text-sm font-semibold rounded-md transition-colors ${role === 'teacher' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-600 hover:bg-white/70'}`}>Teacher</button>
+                        <button type="button" onClick={() => setRole('student')} className={`flex-1 py-1.5 text-sm font-semibold rounded-md transition-colors ${role === 'student' ? 'bg-white text-green-700 shadow-sm' : 'text-slate-600 hover:bg-white/70'}`}>Student</button>
+                    </div>
+                </div>
+            )}
+            <div>
+              <label className="block text-sm font-medium text-slate-600">Email</label>
+              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required className={`${inputStyles} mt-1`} />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-600">Password</label>
+              <div className="relative mt-1">
+                <input type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} className={inputStyles} />
+                <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute inset-y-0 right-0 flex items-center pr-3 text-slate-400 hover:text-slate-600">
+                  {showPassword ? <svg className="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg> : <svg className="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.542-7 1.274-4.057 5.064 7-9.542-7 1.845 0 3.576.506 5.034 1.353m-2.47 1.825A4 4 0 0012 13a4 4 0 00-1.404 3.001m2.808-5.002l4.636 4.636M3 3l18 18" /></svg>}
+                </button>
+              </div>
+            </div>
+            {view === 'signIn' && (
+                <div className="flex items-center justify-between">
+                    <label className="flex items-center space-x-2 cursor-pointer">
+                        <input type="checkbox" checked={rememberMe} onChange={(e) => setRememberMe(e.target.checked)} className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+                        <span className="text-sm font-medium text-slate-700">Remember email</span>
+                    </label>
+                    <button type="button" onClick={() => setView('forgotPassword')} className="text-sm font-semibold text-indigo-600 hover:underline">Forgot Password?</button>
+                </div>
+            )}
+            <button type="submit" disabled={loading} className="w-full flex justify-center px-4 py-2.5 text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 font-semibold disabled:bg-indigo-400">{loading ? 'Processing...' : (view === 'signUp' ? 'Sign Up' : 'Sign In')}</button>
+          </form>
+        );
+    }
+    return (
+        <form onSubmit={handlePhoneAuth} className="space-y-4">
+           {view === 'signUp' && !otpSent && (
+              <div>
+                  <label className="block text-sm font-medium text-slate-600 mb-2">I am a:</label>
+                  <div className="flex items-center bg-slate-100 rounded-lg p-1 space-x-1">
+                      <button type="button" onClick={() => setRole('teacher')} className={`flex-1 py-1.5 text-sm font-semibold rounded-md transition-colors ${role === 'teacher' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-600 hover:bg-white/70'}`}>Teacher</button>
+                      <button type="button" onClick={() => setRole('student')} className={`flex-1 py-1.5 text-sm font-semibold rounded-md transition-colors ${role === 'student' ? 'bg-white text-green-700 shadow-sm' : 'text-slate-600 hover:bg-white/70'}`}>Student</button>
+                  </div>
+              </div>
+          )}
+          {!otpSent ? (
+              <>
+                  <div>
+                      <label className="block text-sm font-medium text-slate-600">{t('phoneNumber', lang)}</label>
+                      <div className="relative mt-1">
+                          <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                              <span className="text-slate-500 sm:text-sm">+91</span>
+                          </div>
+                          <input
+                              type="tel"
+                              value={phone}
+                              onChange={(e) => {
+                                  const value = e.target.value.replace(/\D/g, ''); // Allow only digits
+                                  if (value.length <= 10) {
+                                      setPhone(value);
+                                  }
+                              }}
+                              placeholder="9876543210"
+                              required
+                              className={`${inputStyles} pl-10`}
+                              maxLength={10}
+                          />
+                      </div>
+                  </div>
+                  <button type="button" onClick={handleSendOtp} disabled={loading} className="w-full flex justify-center px-4 py-2.5 text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 font-semibold disabled:bg-indigo-400">{loading ? 'Sending...' : t('sendOTP', lang)}</button>
+              </>
+          ) : (
+              <>
+                  <div>
+                      <label className="block text-sm font-medium text-slate-600">{t('enterOTP', lang)}</label>
+                      <input type="text" value={otp} onChange={(e) => setOtp(e.target.value)} required minLength={6} maxLength={6} className={`${inputStyles} mt-1 tracking-widest text-center`} />
+                  </div>
+                  <button type="submit" disabled={loading} className="w-full flex justify-center px-4 py-2.5 text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 font-semibold disabled:bg-indigo-400">{loading ? 'Verifying...' : t('verifyAndSignIn', lang)}</button>
+                  <button type="button" onClick={() => { setOtpSent(false); setSuccess(null); setError(null); }} className="w-full text-center text-sm font-semibold text-slate-500 hover:text-indigo-600">{t('changePhoneNumber', lang)}</button>
+              </>
+          )}
+        </form>
+    );
+  };
+
+  const getHeader = () => {
+    if (view === 'forgotPassword') return 'Reset Password';
+    if (view === 'signUp') return 'Create an Account';
+    return 'Welcome Back';
+  };
+
+  const getSubheader = () => {
+    if (view === 'forgotPassword') return 'Enter your email to receive reset instructions.';
+    if (view === 'signUp') return 'Join to start building your question bank.';
+    return 'Sign in to continue.';
+  };
+
   return (
     <>
       <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
@@ -106,70 +297,54 @@ const Auth: React.FC = () => {
 
           <div className="p-8 sm:p-12">
             <h1 className="text-3xl font-bold font-serif-display text-slate-800 mb-2">
-              {isSignUp ? 'Create an Account' : 'Welcome Back'}
+              {getHeader()}
             </h1>
-            <p className="text-slate-500 mb-6">{isSignUp ? 'Join to start building your question bank.' : 'Sign in to continue.'}</p>
+            <p className="text-slate-500 mb-6">{getSubheader()}</p>
             
-            <button onClick={handleGoogleSignIn} disabled={loading} className="w-full flex items-center justify-center px-4 py-2.5 border border-slate-300 rounded-lg text-slate-700 font-semibold hover:bg-slate-50 transition-colors disabled:opacity-50">
-              <GoogleIcon /> Sign in with Google
-            </button>
-
-            <div className="flex items-center my-6">
-              <hr className="flex-grow border-t border-slate-300" /><span className="mx-4 text-xs font-semibold text-slate-400">OR SIGN IN WITH EMAIL</span><hr className="flex-grow border-t border-slate-300" />
-            </div>
-
-            <form onSubmit={handleEmailAuth} className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-slate-600">Email</label>
-                  <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required className={`${inputStyles} mt-1`} />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-600">Password</label>
-                  <div className="relative mt-1">
-                    <input type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} className={inputStyles} />
-                    <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute inset-y-0 right-0 flex items-center pr-3 text-slate-400 hover:text-slate-600">
-                      {showPassword ? <svg className="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg> : <svg className="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.542-7 1.274-4.057 5.064 7-9.542-7 1.845 0 3.576.506 5.034 1.353m-2.47 1.825A4 4 0 0012 13a4 4 0 00-1.404 3.001m2.808-5.002l4.636 4.636M3 3l18 18" /></svg>}
+            {view !== 'forgotPassword' && (
+                <>
+                    <button onClick={handleGoogleSignIn} disabled={loading} className="w-full flex items-center justify-center px-4 py-2.5 border border-slate-300 rounded-lg text-slate-700 font-semibold hover:bg-slate-50 transition-colors disabled:opacity-50">
+                      <GoogleIcon /> Sign in with Google
                     </button>
-                  </div>
-                </div>
-                {!isSignUp && <div className="flex items-center"><label className="flex items-center space-x-2 cursor-pointer"><input type="checkbox" checked={rememberMe} onChange={(e) => setRememberMe(e.target.checked)} className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" /><span className="text-sm font-medium text-slate-700">Remember me</span></label></div>}
 
-                {isSignUp && (
-                    <div className="flex items-start">
-                        <div className="flex items-center h-5">
-                            <input
-                                id="terms"
-                                aria-describedby="terms"
-                                type="checkbox"
-                                className="w-4 h-4 border border-slate-300 rounded bg-slate-50 focus:ring-3 focus:ring-indigo-300"
-                                checked={agreedToTerms}
-                                onChange={(e) => setAgreedToTerms(e.target.checked)}
-                                required
-                            />
-                        </div>
-                        <div className="ml-3 text-sm">
-                            <label htmlFor="terms" className="text-slate-500">
-                                I agree to the{' '}
-                                <button
-                                    type="button"
-                                    onClick={() => setIsTermsModalOpen(true)}
-                                    className="font-semibold text-indigo-600 hover:underline"
-                                >
-                                    Terms and Conditions
-                                </button>
-                            </label>
-                        </div>
+                    <div className="flex items-center my-6">
+                      <hr className="flex-grow border-t border-slate-300" /><span className="mx-4 text-xs font-semibold text-slate-400">OR</span><hr className="flex-grow border-t border-slate-300" />
                     </div>
-                )}
 
-                {error && <p className="text-sm text-red-600 bg-red-50 p-3 rounded-lg">{error}</p>}
-                <button type="submit" disabled={loading || (isSignUp && !agreedToTerms)} className="w-full flex justify-center px-4 py-2.5 text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 font-semibold disabled:bg-indigo-400 disabled:cursor-not-allowed">{loading ? 'Processing...' : (isSignUp ? 'Sign Up' : 'Sign In')}</button>
-              </form>
+                    <div className="flex items-center bg-slate-100 rounded-lg p-1 space-x-1 mb-4">
+                        <button type="button" onClick={() => setAuthMethod('email')} className={`flex-1 flex items-center justify-center py-1.5 text-sm font-semibold rounded-md transition-colors ${authMethod === 'email' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-600 hover:bg-white/70'}`}><EmailIcon />Email</button>
+                        <button type="button" onClick={() => setAuthMethod('phone')} className={`flex-1 flex items-center justify-center py-1.5 text-sm font-semibold rounded-md transition-colors ${authMethod === 'phone' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-600 hover:bg-white/70'}`}><PhoneIcon />{t('phone', lang)}</button>
+                    </div>
+                </>
+            )}
+
+            {renderAuthContent()}
+
+            {view === 'signUp' && (
+                <div className="flex items-start mt-4">
+                    <div className="flex items-center h-5">
+                        <input id="terms" type="checkbox" className="w-4 h-4 border border-slate-300 rounded bg-slate-50 focus:ring-3 focus:ring-indigo-300" checked={agreedToTerms} onChange={(e) => setAgreedToTerms(e.target.checked)} required />
+                    </div>
+                    <div className="ml-3 text-sm">
+                        <label htmlFor="terms" className="text-slate-500">I agree to the <button type="button" onClick={() => setIsTermsModalOpen(true)} className="font-semibold text-indigo-600 hover:underline">Terms and Conditions</button></label>
+                    </div>
+                </div>
+            )}
             
-            <p className="text-sm text-center text-slate-500 mt-6">
-              {isSignUp ? 'Already have an account?' : "Don't have an account?"}
-              <button onClick={() => setIsSignUp(!isSignUp)} className="ml-1 font-semibold text-indigo-600 hover:underline">{isSignUp ? 'Sign In' : 'Sign Up'}</button>
-            </p>
+            {error && <p className="text-sm text-red-600 bg-red-50 p-3 rounded-lg mt-4">{error}</p>}
+            {success && <p className="text-sm text-green-600 bg-green-50 p-3 rounded-lg mt-4">{success}</p>}
+            
+            {view === 'forgotPassword' ? (
+                <p className="text-sm text-center text-slate-500 mt-6">
+                    Remembered your password?
+                    <button onClick={() => setView('signIn')} className="ml-1 font-semibold text-indigo-600 hover:underline">Back to Sign In</button>
+                </p>
+            ) : (
+                <p className="text-sm text-center text-slate-500 mt-6">
+                  {view === 'signUp' ? 'Already have an account?' : "Don't have an account?"}
+                  <button onClick={() => setView(view === 'signUp' ? 'signIn' : 'signUp')} className="ml-1 font-semibold text-indigo-600 hover:underline">{view === 'signUp' ? 'Sign In' : 'Sign Up'}</button>
+                </p>
+            )}
           </div>
         </div>
       </div>
@@ -181,7 +356,7 @@ const Auth: React.FC = () => {
           <h3>2. Data Privacy and Permissions</h3>
           <p>To provide and enhance our services, we require your consent to access certain data. By accepting these terms, you grant BioQuest permission to collect, use, and store the following information:</p>
           <ul>
-            <li><strong>Personal Information:</strong> We collect personal details you provide, including but not limited to your Full Name, Email ID, Mobile Number, Age, Gender, and Date of Birth (DOB) for account creation, identification, and personalization.</li>
+            <li><strong>Personal Information:</strong> We collect personal details you provide, including your Full Name and Email ID for account creation, identification, and personalization.</li>
             <li><strong>Device Storage:</strong> We require access to your device's storage to enable features like saving, exporting, and importing your question banks and generated papers.</li>
             <li><strong>Location Data:</strong> We may request access to your device's location (GPS and network-based) to offer region-specific content, features, or analytics in the future.</li>
             <li><strong>Contacts:</strong> To facilitate future features that may allow you to share content or collaborate with your contacts, we may request permission to access your contact list.</li>

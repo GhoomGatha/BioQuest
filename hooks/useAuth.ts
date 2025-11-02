@@ -1,5 +1,4 @@
 
-
 import React, { useState, useEffect, createContext, useContext, ReactNode, useMemo } from 'react';
 import { supabase } from '../services/supabaseClient';
 import { Session, User } from '@supabase/supabase-js';
@@ -17,70 +16,72 @@ const AuthContext = createContext<AuthContextType>({
   session: null,
   user: null,
   profile: null,
-  loading: true,
+  loading: true, // Default to true to handle initial load
   setProfile: () => {},
 });
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(true); // Start as true to handle initial session and profile fetch
 
   useEffect(() => {
-    const fetchSessionAndProfile = async () => {
-      setLoading(true);
-      
-      const { data: { session } } = await supabase.auth.getSession();
-      setSession(session);
+    // onAuthStateChange fires immediately upon subscription with the current session.
+    // This single listener robustly handles the initial state check, logins, and logouts.
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (_event, session) => {
+        setSession(session);
 
-      if (session?.user) {
-        try {
-          const { data: profileData, error } = await supabase
+        if (session?.user) {
+          // 1. Try to fetch the profile
+          let { data: profileData, error } = await supabase
             .from('profiles')
             .select('*')
             .eq('id', session.user.id)
             .single();
-          if (error) {
-            console.error("Error fetching initial profile:", error);
-            setProfile(null);
-          } else {
-            setProfile(profileData);
-          }
-        } catch (e) {
-            console.error("An error occurred fetching the profile:", e);
-            setProfile(null);
-        }
-      }
-      setLoading(false);
-    };
 
-    fetchSessionAndProfile();
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, newSession) => {
-        setSession(newSession);
-        if (newSession?.user) {
-           const { data: profileData, error } = await supabase
+          // 2. If no profile exists (PGRST116 error, which means 'No rows found'), create one.
+          // This is a critical fix for existing users who may not have a profile row.
+          if (error && error.code === 'PGRST116') {
+            console.warn(`No profile found for user ${session.user.id}. Creating a new profile entry.`);
+            const { data: newProfile, error: insertError } = await supabase
               .from('profiles')
-              .select('*')
-              .eq('id', newSession.user.id)
+              .insert({
+                id: session.user.id,
+                // Try to get role from user metadata, which is where it's stored on signup.
+                role: session.user.user_metadata?.role || null 
+              })
+              .select()
               .single();
-            if (error) {
-              console.error("Error fetching profile on auth change:", error);
-              setProfile(null);
+
+            if (insertError) {
+              console.error("Failed to create profile for existing user:", insertError);
+              profileData = null; // Can't proceed, set profile to null
             } else {
-              setProfile(profileData);
+              profileData = newProfile; // Successfully created, proceed with this new profile
             }
+          } else if (error) {
+            // Handle other, unexpected errors during profile fetch
+            console.error("Error fetching profile:", error);
+            profileData = null;
+          }
+          
+          setProfile(profileData);
         } else {
+          // User is logged out, clear the profile.
           setProfile(null);
         }
+        
+        // The loading is finished after the first auth event is processed.
+        setLoading(false);
       }
     );
 
     return () => {
-      subscription.unsubscribe();
+      subscription?.unsubscribe();
     };
   }, []);
+
 
   const value = useMemo(() => ({
     session,
@@ -89,8 +90,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     loading,
     setProfile,
   }), [session, profile, loading]);
-
-  return React.createElement(AuthContext.Provider, { value }, children);
+  
+  return React.createElement(AuthContext.Provider, { value: value }, children);
 };
 
 export const useAuth = () => {

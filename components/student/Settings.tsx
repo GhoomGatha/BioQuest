@@ -1,25 +1,25 @@
 
 
 import React, { useState, useEffect, useRef } from 'react';
-import { t } from '../utils/localization';
-import { Language, Profile } from '../types';
-import { supabase } from '../services/supabaseClient';
-import CameraModal from './CameraModal';
+import { t } from '../../utils/localization';
+import { Language, Profile } from '../../types';
+import CameraModal from '../CameraModal';
+import { supabase } from '../../services/supabaseClient';
 
-interface SettingsProps {
+interface StudentSettingsProps {
     onExport: () => void;
     onImport: (e: React.ChangeEvent<HTMLInputElement>) => void;
     onClear: () => void;
     lang: Language;
+    profile: Profile;
+    onProfileUpdate: (profile: Profile, avatarFile?: File) => Promise<void>;
+    showToast: (message: string, type?: 'success' | 'error') => void;
     userApiKey: string;
     onSaveApiKey: (key: string) => void;
     onRemoveApiKey: () => void;
     userOpenApiKey: string;
     onSaveOpenApiKey: (key: string) => void;
     onRemoveOpenApiKey: () => void;
-    profile: Profile;
-    onProfileUpdate: (profile: Profile, avatarFile?: File) => Promise<void>;
-    showToast: (message: string, type?: 'success' | 'error') => void;
 }
 
 const UserCircleIcon = () => (
@@ -29,12 +29,15 @@ const UserCircleIcon = () => (
 );
 
 
-const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, userApiKey, onSaveApiKey, onRemoveApiKey, userOpenApiKey, onSaveOpenApiKey, onRemoveOpenApiKey, profile, onProfileUpdate, showToast }) => {
+const StudentSettings: React.FC<StudentSettingsProps> = ({ 
+    onExport, onImport, onClear, lang, profile, onProfileUpdate, showToast,
+    userApiKey, onSaveApiKey, onRemoveApiKey, userOpenApiKey, onSaveOpenApiKey, onRemoveOpenApiKey
+}) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importFileInputRef = useRef<HTMLInputElement>(null);
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [openApiKeyInput, setOpenApiKeyInput] = useState('');
-  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
   const [profileData, setProfileData] = useState(profile);
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
@@ -42,8 +45,9 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
   const [isSaving, setIsSaving] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
-  const inputStyles = "w-full p-2 border rounded-lg border-slate-300 bg-slate-50 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 transition";
-
+  const inputStyles = "w-full p-2.5 border rounded-lg border-slate-300 bg-slate-50 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 transition";
+  const buttonBaseStyles = "mt-2 sm:mt-0 w-full sm:w-auto px-4 py-2 font-semibold text-white rounded-lg shadow-sm hover:shadow-md hover:-translate-y-px transition-all";
+  
   useEffect(() => {
     setApiKeyInput(userApiKey);
     setOpenApiKeyInput(userOpenApiKey);
@@ -51,41 +55,18 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
   
   useEffect(() => {
     setProfileData(profile);
-    if (!isEditingProfile) {
+    if (!isEditing) {
         setAvatarFile(null);
         setAvatarPreview(null);
     }
-  }, [profile, isEditingProfile]);
+  }, [profile, isEditing]);
 
   const handleImportClick = () => {
     importFileInputRef.current?.click();
   };
 
-  const handleClearClick = () => {
-    if (window.confirm(t('clearWarning', lang))) {
-      onClear();
-    }
-  };
-
-  const handleSaveKey = () => {
-    onSaveApiKey(apiKeyInput);
-  };
-  
-  const handleRemoveKey = () => {
-    onRemoveApiKey();
-  };
-
-  const handleSaveOpenApiKey = () => {
-    onSaveOpenApiKey(openApiKeyInput);
-  };
-
-  const handleRemoveOpenApiKey = () => {
-    onRemoveOpenApiKey();
-  };
-
-  const handleProfileChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
-    const { name, value } = e.target;
-    setProfileData(prev => ({ ...prev, [name]: value }));
+  const handleProfileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setProfileData(prev => ({ ...prev, [e.target.name]: e.target.value }));
   };
 
   const handleAvatarFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -104,33 +85,31 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
     reader.onloadend = () => setAvatarPreview(reader.result as string);
     reader.readAsDataURL(file);
     setCameraModalOpen(false);
-  }
+  };
 
-  const handleProfileSave = async () => {
+  const handleSave = async () => {
     setIsSaving(true);
     try {
         await onProfileUpdate(profileData, avatarFile || undefined);
-        setIsEditingProfile(false);
-    } catch (error: any) {
-        console.error("Failed to save profile:", error.message || error);
+        setIsEditing(false);
+    } catch (error) {
+        console.error("Failed to save profile:", error);
     } finally {
         setIsSaving(false);
     }
   };
-
+  
   const handleLogout = async () => {
     setIsLoggingOut(true);
     const { error } = await supabase.auth.signOut();
     if (error) {
-        console.error('Logout error:', error.message);
-        showToast(`Logout failed: ${error.message}`, 'error');
-        setIsLoggingOut(false);
+      console.error('Logout error:', error.message);
+      showToast(`Logout failed: ${error.message}`, 'error');
+      setIsLoggingOut(false);
     }
     // The onAuthStateChange listener in useAuth.ts will handle the UI update.
     // No need for a forced reload which causes issues in iframes.
-  }
-
-  const buttonBaseStyles = "mt-2 sm:mt-0 w-full sm:w-auto px-4 py-2 font-semibold text-white rounded-lg shadow-sm hover:shadow-md hover:-translate-y-px transition-all";
+  };
 
   const currentAvatar = avatarPreview || profile.avatar_url;
 
@@ -139,21 +118,11 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
     <div className="p-2 sm:p-4 md:p-6 space-y-6">
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
         <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-bold font-serif-display text-slate-800">User Profile</h2>
-            {!isEditingProfile && <button onClick={() => setIsEditingProfile(true)} className="font-semibold text-indigo-600 hover:text-indigo-800">Edit</button>}
+            <h2 className="text-xl font-bold font-serif-display text-slate-800">{t('profile', lang)}</h2>
+            {!isEditing && <button onClick={() => setIsEditing(true)} className="font-semibold text-indigo-600 hover:text-indigo-800">Edit</button>}
         </div>
-        {!isEditingProfile ? (
-            <div className="flex flex-col sm:flex-row items-center sm:items-start gap-6">
-                <div className="w-24 h-24 bg-slate-100 rounded-full overflow-hidden flex-shrink-0">
-                    {currentAvatar ? <img src={currentAvatar} alt="Profile" className="w-full h-full object-cover" /> : <UserCircleIcon />}
-                </div>
-                <div className="space-y-2 text-slate-600 text-center sm:text-left">
-                    <p><strong>Full Name:</strong> {profile.full_name}</p>
-                    <p><strong>Role:</strong> <span className="capitalize font-medium text-indigo-700">{profile.role}</span></p>
-                </div>
-            </div>
-        ) : (
-            <div className="space-y-4">
+        {isEditing ? (
+             <div className="space-y-4">
                 <div className="flex flex-col items-center gap-4">
                     <div className="w-24 h-24 bg-slate-100 rounded-full overflow-hidden">
                         {(avatarPreview || profileData.avatar_url) ? <img src={avatarPreview || profileData.avatar_url} alt="Profile" className="w-full h-full object-cover" /> : <UserCircleIcon />}
@@ -166,10 +135,20 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
                 </div>
                 <input type="text" name="full_name" value={profileData.full_name} onChange={handleProfileChange} className={inputStyles} placeholder="Full Name"/>
                 <div className="flex justify-end space-x-2">
-                    <button onClick={() => setIsEditingProfile(false)} className="px-4 py-2 bg-slate-200 rounded">Cancel</button>
-                    <button onClick={handleProfileSave} className="px-4 py-2 bg-indigo-600 text-white rounded disabled:bg-indigo-400" disabled={isSaving}>
+                    <button onClick={() => setIsEditing(false)} className="px-4 py-2 bg-slate-200 rounded-lg font-medium">Cancel</button>
+                    <button onClick={handleSave} className="px-4 py-2 bg-indigo-600 text-white rounded-lg font-semibold disabled:bg-indigo-400" disabled={isSaving}>
                         {isSaving ? 'Saving...' : 'Save'}
                     </button>
+                </div>
+            </div>
+        ) : (
+            <div className="flex flex-col sm:flex-row items-center sm:items-start gap-6">
+                <div className="w-24 h-24 bg-slate-100 rounded-full overflow-hidden flex-shrink-0">
+                    {currentAvatar ? <img src={currentAvatar} alt="Profile" className="w-full h-full object-cover" /> : <UserCircleIcon />}
+                </div>
+                <div className="space-y-2 text-slate-600 text-center sm:text-left">
+                    <p className="text-xl font-bold text-slate-800">{profile.full_name}</p>
+                    <p><strong>Role:</strong> <span className="capitalize font-medium text-green-700">{profile.role}</span></p>
                 </div>
             </div>
         )}
@@ -178,36 +157,10 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
         <h2 className="text-xl font-bold font-serif-display text-slate-800 mb-4">{t('apiKeyManagement', lang)}</h2>
         <div className="space-y-4 p-4 rounded-lg bg-slate-50">
-          <p className="text-slate-600 text-sm">
-            {t('apiKeyInstruction', lang)}&nbsp;
-            <a href="https://ai.google.dev/" target="_blank" rel="noopener noreferrer" className="text-indigo-600 font-medium hover:underline">
-                {t('getYourKey', lang)}
-            </a>
-          </p>
+          <p className="text-slate-600 text-sm">{t('apiKeyInstruction', lang)}&nbsp;<a href="https://ai.google.dev/" target="_blank" rel="noopener noreferrer" className="text-indigo-600 font-medium hover:underline">{t('getYourKey', lang)}</a></p>
           <div className="flex flex-col sm:flex-row gap-2">
-            <input 
-              type="password"
-              placeholder={t('enterApiKey', lang)}
-              value={apiKeyInput}
-              onChange={(e) => setApiKeyInput(e.target.value)}
-              className="flex-grow p-2 border border-slate-300 rounded-lg shadow-sm focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 transition"
-            />
-            {userApiKey ? (
-              <button
-                onClick={handleRemoveKey}
-                className={`${buttonBaseStyles} bg-red-600 hover:bg-red-700`}
-              >
-                {t('removeKey', lang)}
-              </button>
-            ) : (
-              <button
-                onClick={handleSaveKey}
-                className={`${buttonBaseStyles} bg-indigo-600 hover:bg-indigo-700`}
-                disabled={!apiKeyInput}
-              >
-                {t('saveKey', lang)}
-              </button>
-            )}
+            <input type="password" placeholder={t('enterApiKey', lang)} value={apiKeyInput} onChange={(e) => setApiKeyInput(e.target.value)} className="flex-grow p-2 border border-slate-300 rounded-lg shadow-sm" />
+            {userApiKey ? (<button onClick={onRemoveApiKey} className={`${buttonBaseStyles} bg-red-600 hover:bg-red-700`}>{t('removeKey', lang)}</button>) : (<button onClick={() => onSaveApiKey(apiKeyInput)} className={`${buttonBaseStyles} bg-indigo-600 hover:bg-indigo-700`} disabled={!apiKeyInput}>{t('saveKey', lang)}</button>)}
           </div>
         </div>
       </div>
@@ -215,36 +168,10 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
         <h2 className="text-xl font-bold font-serif-display text-slate-800 mb-4">{t('openaiApiKeyManagement', lang)}</h2>
         <div className="space-y-4 p-4 rounded-lg bg-slate-50">
-            <p className="text-slate-600 text-sm">
-                {t('openaiApiKeyInstruction', lang)}&nbsp;
-                <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" className="text-indigo-600 font-medium hover:underline">
-                    {t('getYourOpenAIKey', lang)}
-                </a>
-            </p>
+            <p className="text-slate-600 text-sm">{t('openaiApiKeyInstruction', lang)}&nbsp;<a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" className="text-indigo-600 font-medium hover:underline">{t('getYourOpenAIKey', lang)}</a></p>
             <div className="flex flex-col sm:flex-row gap-2">
-                <input 
-                    type="password"
-                    placeholder={t('enterOpenAIApiKey', lang)}
-                    value={openApiKeyInput}
-                    onChange={(e) => setOpenApiKeyInput(e.target.value)}
-                    className="flex-grow p-2 border border-slate-300 rounded-lg shadow-sm focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 transition"
-                />
-                {userOpenApiKey ? (
-                    <button
-                        onClick={handleRemoveOpenApiKey}
-                        className={`${buttonBaseStyles} bg-red-600 hover:bg-red-700`}
-                    >
-                        {t('removeKey', lang)}
-                    </button>
-                ) : (
-                    <button
-                        onClick={handleSaveOpenApiKey}
-                        className={`${buttonBaseStyles} bg-indigo-600 hover:bg-indigo-700`}
-                        disabled={!openApiKeyInput}
-                    >
-                        {t('saveKey', lang)}
-                    </button>
-                )}
+                <input type="password" placeholder={t('enterOpenAIApiKey', lang)} value={openApiKeyInput} onChange={(e) => setOpenApiKeyInput(e.target.value)} className="flex-grow p-2 border border-slate-300 rounded-lg shadow-sm" />
+                {userOpenApiKey ? (<button onClick={onRemoveOpenApiKey} className={`${buttonBaseStyles} bg-red-600 hover:bg-red-700`}>{t('removeKey', lang)}</button>) : (<button onClick={() => onSaveOpenApiKey(openApiKeyInput)} className={`${buttonBaseStyles} bg-indigo-600 hover:bg-indigo-700`} disabled={!openApiKeyInput}>{t('saveKey', lang)}</button>)}
             </div>
         </div>
       </div>
@@ -283,7 +210,7 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between p-3 rounded-lg bg-slate-50">
             <p className="text-slate-700 font-medium">{t('clearData', lang)}</p>
             <button
-              onClick={handleClearClick}
+              onClick={onClear}
               className={`${buttonBaseStyles} bg-red-600 hover:bg-red-700`}
             >
               {t('delete', lang)}
@@ -308,10 +235,10 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
         <h2 className="text-xl font-bold font-serif-display text-slate-800 mb-4">{t('appInfo', lang)}</h2>
         <div className="space-y-2 text-slate-600 text-center">
           <p className="font-semibold text-lg">{t('appTitle', lang)}</p>
-          <p className="italic">“{t('appSubtitle', lang)}”</p>
+          <p className="italic">“{t('studentAppSubtitle', lang)}”</p>
           <p className="text-sm pt-2">{t('version', lang)}</p>
           <p className="text-sm">{t('credits', lang)}</p>
-          <p className="text-xs text-slate-500 mt-2">{t('designedFor', lang)}</p>
+          <p className="text-xs text-slate-500 mt-2">{t('studentDesignedFor', lang)}</p>
         </div>
       </div>
 
@@ -326,4 +253,4 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
   );
 };
 
-export default Settings;
+export default StudentSettings;

@@ -1,5 +1,6 @@
 
 
+
 export enum Difficulty {
   Easy = 'Easy',
   Moderate = 'Moderate',
@@ -34,12 +35,18 @@ export interface Question {
   answer?: string;
   marks: number;
   difficulty: Difficulty;
-  usedIn: UsedIn[];
+  used_in: UsedIn[];
   source: QuestionSource;
   year: number;
   semester: Semester;
   tags: string[];
-  imageDataURL?: string;
+  image_data_url?: string;
+  created_at?: string;
+}
+
+export interface GroundingSource {
+  uri: string;
+  title: string;
 }
 
 export interface Paper {
@@ -50,21 +57,21 @@ export interface Paper {
   class: number;
   semester: Semester;
   source: QuestionSource;
-  fileType?: string;
+  file_type?: string;
   text?: string;
-  dataURL?: string;
+  data_url?: string;
   questions: Question[];
-  createdAt: string;
+  created_at: string;
+  grounding_sources?: GroundingSource[];
+  board?: string;
 }
+
+export type Role = 'teacher' | 'student';
 
 export interface Profile {
   id: string;
   full_name: string;
-  phone_number: string;
-  age: number;
-  gender: string;
-  address?: string;
-  date_of_birth?: string;
+  role: Role | null;
   avatar_url?: string;
 }
 
@@ -76,4 +83,57 @@ export interface ToastMessage {
   id: number;
   message: string;
   type: 'success' | 'error';
+}
+
+// Student-specific types
+export type StudentTab = 'dashboard' | 'results' | 'practice' | 'settings';
+
+export interface StudentAnswer {
+  questionId: string;
+  answer: string;
+}
+
+export interface Analysis {
+  strengths: string[];
+  weaknesses: string[];
+  summary: string;
+}
+
+export interface TestAttempt {
+  db_id?: string; // Unique ID from the database table
+  paperId: string;
+  paperTitle: string;
+  studentAnswers: StudentAnswer[];
+  score: number;
+  totalMarks: number;
+  completedAt: string;
+  class: number;
+  year: number;
+  semester: Semester;
+  analysis?: Analysis;
+  paper: Paper;
+}
+
+export interface Flashcard {
+  question: string;
+  answer: string;
+}
+
+export interface DiagramSuggestion {
+  name: string;
+  description: string;
+  image_prompt: string;
+}
+
+export interface DiagramGrade {
+  score: number;
+  strengths: string[];
+  areasForImprovement: string[];
+  feedback: string;
+}
+
+export interface PracticeSuggestion {
+  chapter: string;
+  topic: string;
+  reason: string;
 }
